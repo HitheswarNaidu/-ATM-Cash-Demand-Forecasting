@@ -1,0 +1,113 @@
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder.appName("ATMForecast").getOrCreate()
+
+df = spark.read.csv("C:/Users/hithe/Downloads/archive (15)/atm_cash_management_dataset.csv", header=True, inferSchema=True)
+
+df.show(5)
+df.printSchema()
+df = df.dropna()
+
+from pyspark.sql.functions import to_date
+
+df = df.withColumn("Date", to_date("DATE", "dd-MM-yyyy"))
+
+from pyspark.sql.functions import dayofweek
+
+df = df.withColumn("DayOfWeek", dayofweek("Date"))
+
+from pyspark.sql.functions import when, col
+
+df = df.withColumn("HolidayFlag",
+    when(col("DayOfWeek") == 1, 1).otherwise(0)
+)
+
+
+df = df.withColumnRenamed("Cash_Demand_Next_Day", "DailyDemand")
+
+data = df.select(
+    "DailyDemand",
+    "DayOfWeek",
+    "HolidayFlag",
+    "Total_Withdrawals",
+    "Total_Deposits",
+    "Previous_Day_Cash_Level"
+)
+
+
+from pyspark.ml.feature import VectorAssembler
+
+assembler = VectorAssembler(
+    inputCols=[
+        "DayOfWeek",
+        "HolidayFlag",
+        "Total_Withdrawals",
+        "Total_Deposits",
+        "Previous_Day_Cash_Level"
+    ],
+    outputCol="features"
+)
+
+data = assembler.transform(data).select("features", "DailyDemand")
+
+print("Total rows:", data.count())
+data.show(5)
+
+
+train, test = data.randomSplit([0.8, 0.2], seed=42)
+
+print("Train:", train.count())
+print("Test:", test.count())
+
+
+from pyspark.ml.regression import LinearRegression
+
+lr = LinearRegression(
+    featuresCol="features",
+    labelCol="DailyDemand",
+    regParam=0.1   # prevents overfitting
+)
+
+model = lr.fit(train)
+
+
+predictions = model.transform(test)
+
+predictions.select("DailyDemand", "prediction").show(10)
+
+
+from pyspark.ml.evaluation import RegressionEvaluator
+
+# RMSE
+rmse = RegressionEvaluator(
+    labelCol="DailyDemand",
+    predictionCol="prediction",
+    metricName="rmse"
+).evaluate(predictions)
+
+# R²
+r2 = RegressionEvaluator(
+    labelCol="DailyDemand",
+    predictionCol="prediction",
+    metricName="r2"
+).evaluate(predictions)
+
+print("RMSE:", rmse)
+print("R2 Score:", r2)
+
+
+pdf = predictions.select("DailyDemand", "prediction").toPandas()
+
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10,5))
+
+plt.plot(pdf["DailyDemand"].values, label="Actual Demand")
+plt.plot(pdf["prediction"].values, label="Predicted Demand")
+
+plt.title("ATM Cash Demand Forecasting")
+plt.xlabel("Records")
+plt.ylabel("Cash Demand")
+plt.legend()
+
+plt.show()
